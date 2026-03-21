@@ -1,0 +1,23 @@
+diff --git a/node_modules/@whiskeysockets/baileys/lib/Socket/chats.js b/node_modules/@whiskeysockets/baileys/lib/Socket/chats.js
+index 85d01de..6341e71 100644
+--- a/node_modules/@whiskeysockets/baileys/lib/Socket/chats.js
++++ b/node_modules/@whiskeysockets/baileys/lib/Socket/chats.js
+@@ -875,7 +875,8 @@ export const makeChatsSocket = (config) => {
+             setTimeout(() => ev.flush(), 0);
+             return;
+         }
+-        logger.info('History sync is enabled, awaiting notification with a 20s timeout.');
++        const historySyncWaitMs = Number(process.env.WHATSAPP_HISTORY_SYNC_WAIT_MS) || 120000;
++        logger.info({ historySyncWaitMs }, 'History sync is enabled, awaiting notification with timeout.');
+         if (awaitingSyncTimeout) {
+             clearTimeout(awaitingSyncTimeout);
+         }
+@@ -885,7 +886,7 @@ export const makeChatsSocket = (config) => {
+                 syncState = SyncState.Online;
+                 ev.flush();
+             }
+-        }, 20000);
++        }, historySyncWaitMs);
+     });
+     return {
+         ...sock,

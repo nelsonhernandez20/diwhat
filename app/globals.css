@@ -1,26 +1,84 @@
 @import "tailwindcss";
 
+/* Paleta tipo WhatsApp (colores propios) — siempre claro en dashboard */
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #002042;
+  --brand-primary: #006ce3;
+  --brand-text: #002042;
+  --brand-bg: #ffffff;
+  --brand-muted: #5a6f7d;
+  --brand-chat: #e8edf3;
+  --brand-border: #e0e7ef;
+  --brand-bubble-in: #ffffff;
+  --brand-hover: #e8f2fc;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-brand-primary: #006ce3;
+  --color-brand-text: #002042;
+  --color-brand-bg: #ffffff;
+  --color-brand-muted: #5a6f7d;
+  --color-brand-chat: #e8edf3;
+  --color-brand-border: #e0e7ef;
+  --color-brand-bubble-in: #ffffff;
+  --color-brand-hover: #e8f2fc;
+  --color-brand-internal-bg: #fff8e6;
+  --color-brand-internal-border: #e8d48b;
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: light;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--brand-bg);
+  color: var(--brand-text);
+  font-family: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Área de mensajes: scroll táctil tipo WhatsApp */
+.chat-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* Utilidades de botón (colores fijos por si el tema no resuelve en @apply) */
+.btn-brand {
+  border-radius: 0.5rem;
+  background-color: #006ce3;
+  color: #ffffff;
+  padding: 0.625rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.05);
+  transition: filter 0.15s ease;
+}
+.btn-brand:hover:not(:disabled) {
+  filter: brightness(0.95);
+}
+.btn-brand:disabled {
+  opacity: 0.5;
+}
+
+.btn-brand-outline {
+  border-radius: 0.5rem;
+  border: 2px solid #006ce3;
+  background-color: #ffffff;
+  color: #006ce3;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  transition: background-color 0.15s ease;
+}
+.btn-brand-outline:hover:not(:disabled) {
+  background-color: #e8f2fc;
+}
+.btn-brand-outline:disabled {
+  opacity: 0.5;
 }

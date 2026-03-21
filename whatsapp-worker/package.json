@@ -1,0 +1,27 @@
+{
+  "name": "diwhat-whatsapp-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --import tsx src/index.ts",
+    "start": "node --import tsx src/index.ts",
+    "typecheck": "tsc",
+    "postinstall": "patch-package"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "@whiskeysockets/baileys": "^6.7.21",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "ffmpeg-static": "^5.2.0",
+    "nodemailer": "^8.0.3",
+    "pino": "^9.6.0",
+    "tsx": "^4.19.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^20.17.14",
+    "patch-package": "^8.0.1",
+    "typescript": "^5.7.3"
+  }
+}

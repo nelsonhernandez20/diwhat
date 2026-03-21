@@ -1,36 +1,40 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Diwhat
 
-## Getting Started
+SaaS multi-tenant: equipo compartido, WhatsApp (Baileys, no oficial), notas internas solo para el staff.
 
-First, run the development server:
+## Requisitos
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- Node.js 20+
+- Proyecto en [Supabase](https://supabase.com) con Auth email/contraseña
+- Migraciones en `supabase/migrations/` aplicadas (SQL Editor o CLI). La bandeja en tiempo real necesita la migración que añade `messages` y `conversations` a `supabase_realtime`. Las **notas de voz** requieren la migración que añade `content_type` / `media_path` y el bucket Storage `message_media`.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Variables de entorno
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Copia `.env.example` a `.env.local` y rellena Supabase, el worker y (opcional) **SMTP** para que las invitaciones de equipo lleguen por correo. Define **`NEXT_PUBLIC_SITE_URL`** (p. ej. `http://localhost:3000` en local) para que el enlace del email sea correcto. Quita **`RESEND_API_KEY`** si la tenías; este proyecto usa **Nodemailer**.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Desarrollo (dos terminales)
 
-## Learn More
+1. **Next.js**
 
-To learn more about Next.js, take a look at the following resources:
+   ```bash
+   npm install
+   npm run dev
+   ```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+2. **Worker WhatsApp** (mismo `WHATSAPP_WORKER_SECRET` y URL que en `.env.local`)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+   ```bash
+   cd whatsapp-worker
+   npm install
+   # si falla sharp u otra dependencia nativa: npm install --ignore-scripts
+   npm run dev
+   ```
 
-## Deploy on Vercel
+En el dashboard del negocio: **WhatsApp → Conectar**, escanea el QR. Los mensajes entrantes aparecen en **Bandeja**.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Detalles del worker: `whatsapp-worker/README.md`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Scripts útiles
+
+- `npm run worker:dev` — arranca el worker desde la raíz
+- `npm run worker:typecheck` — comprobación de tipos del worker
