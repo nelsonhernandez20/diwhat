@@ -14,7 +14,9 @@ export default async function InboxLayout({
 
   const { data: conversations, error } = await supabase
     .from("conversations")
-    .select("id, customer_label, wa_chat_id, last_message_at, wa_avatar_path, last_inbound_at, last_read_at")
+    .select(
+      "id, customer_label, customer_display_name, wa_chat_id, last_message_at, wa_avatar_path, last_inbound_at, last_read_at",
+    )
     .eq("organization_id", orgId)
     .order("last_message_at", { ascending: false })
     .order("id", { ascending: false });

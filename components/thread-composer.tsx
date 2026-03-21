@@ -110,13 +110,17 @@ export function ThreadComposer({
         onClearReply();
         return;
       }
-      await postStaffMessage({
+      const textRes = await postStaffMessage({
         orgId,
         conversationId,
         body,
         visibility,
         replyToMessageId: replyTo?.message.id ?? null,
       });
+      if (!textRes.ok) {
+        setError(textRes.error);
+        return;
+      }
       setBody("");
       onClearReply();
     } catch (e) {
@@ -173,13 +177,13 @@ export function ThreadComposer({
   }
 
   const textInputSlot = (
-    <div className="min-w-0 flex-1 rounded-3xl bg-[#f0f2f5] px-3 py-2 shadow-[inset_0_1px_0_rgba(0,0,0,0.03)]">
+    <div className="min-w-0 w-full flex-1 rounded-3xl bg-[#f0f2f5] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(0,0,0,0.03)] lg:py-2">
       <label className="sr-only" htmlFor="thread-reply">
         {imageFile ? "Leyenda opcional" : pdfFile ? "Nota opcional" : "Mensaje"}
       </label>
       <textarea
         id="thread-reply"
-        className="max-h-32 min-h-[44px] w-full resize-none bg-transparent text-[15px] leading-snug text-brand-text outline-none placeholder:text-[#8696a0] focus:outline-none"
+        className="max-h-40 min-h-[52px] w-full resize-none bg-transparent text-base leading-snug text-brand-text outline-none placeholder:text-[#8696a0] focus:outline-none lg:max-h-32 lg:min-h-[44px] lg:text-[15px]"
         placeholder={
           imageFile
             ? "Leyenda opcional junto a la imagen…"
@@ -342,7 +346,7 @@ export function ThreadComposer({
         </p>
       ) : null}
 
-      <p className="mt-2 text-center text-[11px] leading-snug text-[#8696a0]">
+      <p className="mt-2 hidden text-center text-[11px] leading-snug text-[#8696a0] lg:block">
         Enter envía al cliente; Mayús+Enter nueva línea. Las notas internas no se envían por WhatsApp;
         solo las ve tu equipo.
       </p>

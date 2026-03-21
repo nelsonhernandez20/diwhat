@@ -210,19 +210,21 @@ export function ThreadVoiceSend({
   return (
     <div className="flex w-full flex-col gap-2">
       {phase === "idle" ? (
-        <div className="flex items-end gap-2">
-          {textInputSlot}
-          {beforeMicSlot}
-          <button
-            className={`${iconBtn} bg-white text-brand-text shadow-[0_1px_2px_rgba(0,0,0,0.08)] hover:bg-[#ebebeb]`}
-            disabled={busy}
-            type="button"
-            onClick={() => void startRecording()}
-            aria-label="Grabar nota de voz"
-          >
-            <Mic className="h-5 w-5 shrink-0" aria-hidden />
-          </button>
-          {actionSlot}
+        <div className="flex w-full flex-col gap-2 lg:flex-row lg:items-end lg:gap-2">
+          <div className="min-w-0 w-full shrink-0 lg:min-w-0 lg:flex-1">{textInputSlot}</div>
+          <div className="flex w-full shrink-0 flex-wrap items-center justify-between gap-2 sm:justify-end lg:w-auto lg:flex-nowrap lg:items-end">
+            {beforeMicSlot}
+            <button
+              className={`${iconBtn} bg-white text-brand-text shadow-[0_1px_2px_rgba(0,0,0,0.08)] hover:bg-[#ebebeb]`}
+              disabled={busy}
+              type="button"
+              onClick={() => void startRecording()}
+              aria-label="Grabar nota de voz"
+            >
+              <Mic className="h-5 w-5 shrink-0" aria-hidden />
+            </button>
+            {actionSlot}
+          </div>
         </div>
       ) : null}
 

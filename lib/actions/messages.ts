@@ -10,6 +10,7 @@ type WaQuotePayload = {
   isAudio: boolean;
   isImage?: boolean;
   isPdf?: boolean;
+  isSticker?: boolean;
 };
 
 const PDF_MAX_BYTES = 5 * 1024 * 1024;
@@ -132,16 +133,18 @@ async function notifyWorkerSendVoice(payload: {
   }
 }
 
+export type PostStaffMessageResult = { ok: true } | { ok: false; error: string };
+
 export async function postStaffMessage(input: {
   orgId: string;
   conversationId: string;
   body: string;
   visibility: "public" | "internal";
   replyToMessageId?: string | null;
-}) {
+}): Promise<PostStaffMessageResult> {
   const { supabase, user } = await requireOrgMember(input.orgId);
   const text = input.body.trim();
-  if (!text) throw new Error("Mensaje vacío");
+  if (!text) return { ok: false, error: "Mensaje vacío" };
 
   const { data: conv, error: convErr } = await supabase
     .from("conversations")
@@ -150,7 +153,7 @@ export async function postStaffMessage(input: {
     .eq("organization_id", input.orgId)
     .maybeSingle();
 
-  if (convErr || !conv) throw new Error("Conversación no encontrada");
+  if (convErr || !conv) return { ok: false, error: "Conversación no encontrada" };
 
   let replyToMessageId: string | null = null;
   let waQuote: WaQuotePayload | null = null;
@@ -162,8 +165,8 @@ export async function postStaffMessage(input: {
       .eq("id", input.replyToMessageId.trim())
       .maybeSingle();
 
-    if (parentErr || !parent) throw new Error("Mensaje citado no encontrado");
-    if (parent.conversation_id !== conv.id) throw new Error("Respuesta inválida");
+    if (parentErr || !parent) return { ok: false, error: "Mensaje citado no encontrado" };
+    if (parent.conversation_id !== conv.id) return { ok: false, error: "Respuesta inválida" };
 
     replyToMessageId = parent.id;
     const wid = parent.wa_message_id?.trim();
@@ -175,6 +178,7 @@ export async function postStaffMessage(input: {
         isAudio: parent.content_type === "audio",
         isImage: parent.content_type === "image",
         isPdf: parent.content_type === "pdf",
+        isSticker: parent.content_type === "sticker",
       };
     }
   }
@@ -192,27 +196,40 @@ export async function postStaffMessage(input: {
     .select("id, created_at")
     .single();
 
-  if (insErr || !row) throw new Error(insErr?.message ?? "No se pudo guardar");
+  if (insErr || !row) return { ok: false, error: insErr?.message ?? "No se pudo guardar" };
 
   const { error: bumpErr } = await supabase
     .from("conversations")
     .update({ last_message_at: row.created_at as string })
     .eq("id", conv.id)
     .eq("organization_id", input.orgId);
-  if (bumpErr) throw new Error(bumpErr.message);
+  if (bumpErr) return { ok: false, error: bumpErr.message };
 
   if (input.visibility === "public") {
-    await notifyWorkerSend({
-      organizationId: input.orgId,
-      messageId: row.id,
-      waChatId: conv.wa_chat_id,
-      body: text,
-      quote: waQuote,
-    });
+    try {
+      await notifyWorkerSend({
+        organizationId: input.orgId,
+        messageId: row.id,
+        waChatId: conv.wa_chat_id,
+        body: text,
+        quote: waQuote,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Error al enviar al worker de WhatsApp";
+      revalidatePath(`/dashboard/${input.orgId}/inbox/${input.conversationId}`);
+      revalidatePath(`/dashboard/${input.orgId}/inbox`);
+      return {
+        ok: false,
+        error: msg.includes("session not running")
+          ? `${msg} Abre WhatsApp en el dashboard y pulsa Conectar hasta que quede conectado.`
+          : msg,
+      };
+    }
   }
 
   revalidatePath(`/dashboard/${input.orgId}/inbox/${input.conversationId}`);
   revalidatePath(`/dashboard/${input.orgId}/inbox`);
+  return { ok: true };
 }
 
 export async function postStaffImageMessage(input: {
@@ -262,6 +279,7 @@ export async function postStaffImageMessage(input: {
         isAudio: parent.content_type === "audio",
         isImage: parent.content_type === "image",
         isPdf: parent.content_type === "pdf",
+        isSticker: parent.content_type === "sticker",
       };
     }
   }
@@ -368,6 +386,7 @@ export async function postStaffPdfMessage(input: {
         isAudio: parent.content_type === "audio",
         isImage: parent.content_type === "image",
         isPdf: parent.content_type === "pdf",
+        isSticker: parent.content_type === "sticker",
       };
     }
   }
@@ -466,6 +485,7 @@ export async function postStaffVoiceMessage(input: {
         isAudio: parent.content_type === "audio",
         isImage: parent.content_type === "image",
         isPdf: parent.content_type === "pdf",
+        isSticker: parent.content_type === "sticker",
       };
     }
   }

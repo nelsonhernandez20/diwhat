@@ -1,5 +1,6 @@
 "use client";
 
+import { conversationDisplayTitle } from "@/lib/conversation-title";
 import { formatDateTime } from "@/lib/format-date";
 import { sortInboxConversations } from "@/lib/inbox-sort";
 import { WaAvatar } from "@/components/wa-avatar";
@@ -12,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 export type InboxConversationRow = {
   id: string;
   customer_label: string | null;
+  customer_display_name?: string | null;
   wa_chat_id: string;
   last_message_at: string;
   last_inbound_at?: string | null;
@@ -30,9 +32,12 @@ function waPhoneFromChatId(waChatId: string) {
   return waChatId.split("@")[0] ?? waChatId;
 }
 
-function inboxChatTitle(customerLabel: string | null, waChatId: string) {
-  const phone = waPhoneFromChatId(waChatId);
-  return customerLabel?.trim() || phone;
+function inboxChatTitle(
+  customerDisplayName: string | null | undefined,
+  customerLabel: string | null,
+  waChatId: string,
+) {
+  return conversationDisplayTitle(customerDisplayName, customerLabel, waChatId);
 }
 
 function normalizeSearch(s: string) {
@@ -135,7 +140,9 @@ export function InboxConversationListLive({
   const refetchInbox = useCallback(async () => {
       const { data: convs, error } = await supabase
       .from("conversations")
-      .select("id, customer_label, wa_chat_id, last_message_at, wa_avatar_path, last_inbound_at, last_read_at")
+      .select(
+        "id, customer_label, customer_display_name, wa_chat_id, last_message_at, wa_avatar_path, last_inbound_at, last_read_at",
+      )
       .eq("organization_id", orgId)
       .order("last_message_at", { ascending: false })
       .order("id", { ascending: false });
@@ -239,7 +246,9 @@ export function InboxConversationListLive({
               if (idx === -1) {
                 void supabase
                   .from("conversations")
-                  .select("id, customer_label, wa_chat_id, last_message_at, wa_avatar_path, last_inbound_at, last_read_at")
+                  .select(
+        "id, customer_label, customer_display_name, wa_chat_id, last_message_at, wa_avatar_path, last_inbound_at, last_read_at",
+      )
                   .eq("id", convId)
                   .eq("organization_id", orgId)
                   .maybeSingle()
@@ -365,7 +374,7 @@ export function InboxConversationListLive({
     if (!q) return rows;
     return rows.filter((c) => {
       const phone = waPhoneFromChatId(c.wa_chat_id);
-      const title = inboxChatTitle(c.customer_label, c.wa_chat_id);
+      const title = inboxChatTitle(c.customer_display_name, c.customer_label, c.wa_chat_id);
       const hay = `${title} ${phone}`.toLowerCase();
       return hay.includes(q);
     });
@@ -434,7 +443,7 @@ export function InboxConversationListLive({
         <ul className="min-h-0 flex-1 divide-y divide-black/6 overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]">
           {filtered.map((c) => {
             const phone = waPhoneFromChatId(c.wa_chat_id);
-            const title = inboxChatTitle(c.customer_label, c.wa_chat_id);
+            const title = inboxChatTitle(c.customer_display_name, c.customer_label, c.wa_chat_id);
             const preview = previews[c.id];
             const href = `/dashboard/${orgId}/inbox/${c.id}`;
             const active = activeConversationId === c.id;

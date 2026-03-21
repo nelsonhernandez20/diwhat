@@ -308,14 +308,14 @@ async function relinkLidConversationToPhone(
 
   const { data: lidRow } = await sb
     .from("conversations")
-    .select("id, customer_label, wa_avatar_path, last_message_at")
+    .select("id, customer_label, customer_display_name, wa_avatar_path, last_message_at")
     .eq("organization_id", orgId)
     .eq("wa_chat_id", lidJid)
     .maybeSingle();
 
   const { data: phoneRow } = await sb
     .from("conversations")
-    .select("id, customer_label, wa_avatar_path, last_message_at")
+    .select("id, customer_label, customer_display_name, wa_avatar_path, last_message_at")
     .eq("organization_id", orgId)
     .eq("wa_chat_id", phoneJid)
     .maybeSingle();
@@ -352,11 +352,14 @@ async function relinkLidConversationToPhone(
   const last_message_at = new Date(Math.max(lastL, lastP)).toISOString();
   const mergedLabel = mergeCustomerLabelForRelink(lidRow.customer_label, phoneRow.customer_label, phoneJid);
   const mergedAvatar = phoneRow.wa_avatar_path ?? lidRow.wa_avatar_path;
+  const mergedDisplay =
+    phoneRow.customer_display_name?.trim() || lidRow.customer_display_name?.trim() || null;
 
   const { error: updConvErr } = await sb
     .from("conversations")
     .update({
       customer_label: mergedLabel,
+      customer_display_name: mergedDisplay,
       ...(mergedAvatar ? { wa_avatar_path: mergedAvatar } : {}),
       last_message_at,
     })
@@ -466,7 +469,7 @@ async function sendInboundEmailAlerts(input: {
   waChatId: string;
   customerLabel: string;
   body: string;
-  contentType: "text" | "audio" | "image" | "pdf";
+  contentType: "text" | "audio" | "image" | "pdf" | "sticker";
   createdAt: string;
 }) {
   if (!shouldSendInboundEmailAlerts()) return;
@@ -519,7 +522,9 @@ async function sendInboundEmailAlerts(input: {
         ? "Imagen"
         : input.contentType === "pdf"
           ? "PDF"
-          : input.body.trim();
+          : input.contentType === "sticker"
+            ? "Sticker"
+            : input.body.trim();
 
   const transporter = nodemailer.createTransport({
     host: cfg.host,
@@ -790,6 +795,7 @@ async function upsertParticipatingGroups(
 
 const AUDIO_LABEL = "🎤 Mensaje de voz";
 const IMAGE_LABEL = "📷 Imagen";
+const STICKER_LABEL = "🎨 Sticker";
 /** Máximo tamaño PDF guardado / enviado (alineado con la web). */
 const PDF_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -966,7 +972,7 @@ async function persistSyncedMessage(
   const contentTypeKey = norm ? getContentType(norm) : undefined;
 
   let body: string;
-  let content_type: "text" | "audio" | "image" | "pdf" = "text";
+  let content_type: "text" | "audio" | "image" | "pdf" | "sticker" = "text";
   let media_path: string | null = null;
 
   const historyImages = process.env.WHATSAPP_DOWNLOAD_HISTORY_IMAGES !== "0";
@@ -1007,6 +1013,40 @@ async function persistSyncedMessage(
       }
     } else if (debug) {
       console.log("[whatsapp-worker]", og, "imagen (solo placeholder, historial)", waMessageId);
+    }
+  } else if (contentTypeKey === "stickerMessage" && norm) {
+    content_type = "sticker";
+    const prefix =
+      isGroup && !m.key.fromMe && m.pushName?.trim() ? `${m.pushName.trim()}: ` : "";
+    body = `${prefix}${STICKER_LABEL}`;
+    if (allowImageDownload) {
+      try {
+        const buffer = await downloadMediaMessage(m, "buffer", {}, {
+          logger: sock.logger,
+          reuploadRequest: sock.updateMediaMessage,
+        });
+        const extRaw = extensionForMediaMessage(norm);
+        const ext = extRaw && extRaw.length > 0 ? extRaw.replace(/^\./, "") : "webp";
+        const fileName = `${randomUUID()}.${ext}`;
+        const storagePath = `${orgId}/${fileName}`;
+        const rawMime = (norm as { stickerMessage?: { mimetype?: string | null } }).stickerMessage
+          ?.mimetype;
+        const contentType =
+          typeof rawMime === "string" && rawMime.trim()
+            ? rawMime.split(";")[0]!.trim()
+            : "image/webp";
+        const { error: upErr } = await sb.storage.from("message_media").upload(storagePath, buffer, {
+          contentType,
+          upsert: false,
+        });
+        if (upErr) throw upErr;
+        media_path = storagePath;
+        if (debug) console.log("[whatsapp-worker]", og, "sticker guardado", storagePath, waMessageId);
+      } catch (e) {
+        console.warn("[whatsapp-worker]", og, "sticker sin archivo:", (e as Error).message, waMessageId);
+      }
+    } else if (debug) {
+      console.log("[whatsapp-worker]", og, "sticker (solo placeholder, historial)", waMessageId);
     }
   } else if (contentTypeKey === "audioMessage" && norm) {
     content_type = "audio";
@@ -1293,7 +1333,7 @@ async function findPendingStaffOutbound(
   sb: ReturnType<typeof getSupabase>,
   convId: string,
   body: string,
-  content_type: "text" | "audio" | "image" | "pdf",
+  content_type: "text" | "audio" | "image" | "pdf" | "sticker",
   remoteJid: string,
 ) {
   const since = new Date(Date.now() - 120_000).toISOString();
@@ -1313,6 +1353,8 @@ async function findPendingStaffOutbound(
       q = q.eq("content_type", "image");
     } else if (content_type === "pdf") {
       q = q.eq("content_type", "pdf");
+    } else if (content_type === "sticker") {
+      q = q.eq("content_type", "sticker");
     } else {
       q = q.eq("body", body);
     }
@@ -1335,6 +1377,8 @@ async function findPendingStaffOutbound(
       q = q.eq("content_type", "image");
     } else if (content_type === "pdf") {
       q = q.eq("content_type", "pdf");
+    } else if (content_type === "sticker") {
+      q = q.eq("content_type", "sticker");
     } else {
       q = q.eq("body", body);
     }
@@ -1815,6 +1859,7 @@ type WaQuoteBody = {
   isAudio: boolean;
   isImage?: boolean;
   isPdf?: boolean;
+  isSticker?: boolean;
 };
 
 function waQuotedFromPayload(waChatId: string, quote: WaQuoteBody): WAMessage {
@@ -1833,6 +1878,10 @@ function waQuotedFromPayload(waChatId: string, quote: WaQuoteBody): WAMessage {
           fileName: "document.pdf",
           fileLength: 0,
         },
+      }
+    : quote.isSticker
+    ? {
+        conversation: "🎨 Sticker".slice(0, 1024),
       }
     : {
         conversation: (quote.body?.trim() ? quote.body : quote.isImage ? "📷" : " ").slice(0, 1024),

@@ -44,6 +44,7 @@ function replyAuthorLabel(
 export function replyPreviewText(parent: ThreadMessageRow): string {
   if (parent.content_type === "audio") return "Mensaje de voz";
   if (parent.content_type === "image") return "Imagen";
+  if (parent.content_type === "sticker") return "Sticker";
   if (parent.content_type === "pdf") return "PDF";
   const t = parent.body ?? "";
   return t.length > 160 ? `${t.slice(0, 160)}…` : t;
@@ -351,6 +352,33 @@ export function ThreadMessagesLive({
                     />
                   </a>
                   {m.body && m.body !== "📷 Imagen" ? (
+                    <p
+                      className={`mt-1.5 whitespace-pre-wrap text-sm leading-relaxed ${
+                        isOutbound ? "text-white" : "text-brand-text"
+                      }`}
+                    >
+                      {m.body}
+                    </p>
+                  ) : null}
+                </>
+              ) : m.content_type === "sticker" && m.media_path ? (
+                <>
+                  <a
+                    className="mt-2 inline-block max-w-[min(100%,220px)] overflow-hidden rounded-lg"
+                    href={publicMessageMediaUrl(m.media_path)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      alt=""
+                      className="max-h-48 w-auto max-w-full object-contain"
+                      loading="lazy"
+                      src={publicMessageMediaUrl(m.media_path)}
+                    />
+                  </a>
+                  {m.body?.trim() &&
+                  !/^([^:]+:\s*)?🎨 Sticker$/u.test(m.body.trim()) ? (
                     <p
                       className={`mt-1.5 whitespace-pre-wrap text-sm leading-relaxed ${
                         isOutbound ? "text-white" : "text-brand-text"
