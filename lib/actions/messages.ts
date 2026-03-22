@@ -1,5 +1,6 @@
 "use server";
 
+import type { ThreadMessageRow } from "@/components/thread-messages-live";
 import { requireOrgMember } from "@/lib/auth/org";
 import { revalidatePath } from "next/cache";
 
@@ -14,6 +15,11 @@ type WaQuotePayload = {
 };
 
 const PDF_MAX_BYTES = 5 * 1024 * 1024;
+
+function isWorkerConfigured(): boolean {
+  const base = process.env.WHATSAPP_WORKER_URL?.replace(/\/$/, "");
+  return Boolean(base && process.env.WHATSAPP_WORKER_SECRET);
+}
 
 async function notifyWorkerSend(payload: {
   organizationId: string;
@@ -133,7 +139,9 @@ async function notifyWorkerSendVoice(payload: {
   }
 }
 
-export type PostStaffMessageResult = { ok: true } | { ok: false; error: string };
+export type PostStaffMessageResult =
+  | { ok: true; message: ThreadMessageRow }
+  | { ok: false; error: string };
 
 export async function postStaffMessage(input: {
   orgId: string;
@@ -183,6 +191,14 @@ export async function postStaffMessage(input: {
     }
   }
 
+  if (input.visibility === "public" && !isWorkerConfigured()) {
+    return {
+      ok: false,
+      error:
+        "WhatsApp worker no configurado (WHATSAPP_WORKER_URL / WHATSAPP_WORKER_SECRET).",
+    };
+  }
+
   const { data: row, error: insErr } = await supabase
     .from("messages")
     .insert({
@@ -193,10 +209,13 @@ export async function postStaffMessage(input: {
       body: text,
       reply_to_message_id: replyToMessageId,
     })
-    .select("id, created_at")
+    .select(
+      "id, body, direction, visibility, created_at, sender_user_id, content_type, media_path, reply_to_message_id",
+    )
     .single();
 
   if (insErr || !row) return { ok: false, error: insErr?.message ?? "No se pudo guardar" };
+  const message = row as ThreadMessageRow;
 
   const { error: bumpErr } = await supabase
     .from("conversations")
@@ -206,30 +225,20 @@ export async function postStaffMessage(input: {
   if (bumpErr) return { ok: false, error: bumpErr.message };
 
   if (input.visibility === "public") {
-    try {
-      await notifyWorkerSend({
-        organizationId: input.orgId,
-        messageId: row.id,
-        waChatId: conv.wa_chat_id,
-        body: text,
-        quote: waQuote,
-      });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Error al enviar al worker de WhatsApp";
-      revalidatePath(`/dashboard/${input.orgId}/inbox/${input.conversationId}`);
-      revalidatePath(`/dashboard/${input.orgId}/inbox`);
-      return {
-        ok: false,
-        error: msg.includes("session not running")
-          ? `${msg} Abre WhatsApp en el dashboard y pulsa Conectar hasta que quede conectado.`
-          : msg,
-      };
-    }
+    /** No await: el envío por Baileys puede tardar minutos; bloquear la server action congela la UI y la navegación. */
+    void notifyWorkerSend({
+      organizationId: input.orgId,
+      messageId: message.id,
+      waChatId: conv.wa_chat_id,
+      body: text,
+      quote: waQuote,
+    }).catch((e) => {
+      console.error("[diwhat] notifyWorkerSend", e);
+    });
   }
 
-  revalidatePath(`/dashboard/${input.orgId}/inbox/${input.conversationId}`);
-  revalidatePath(`/dashboard/${input.orgId}/inbox`);
-  return { ok: true };
+  revalidatePath(`/dashboard/${input.orgId}/inbox`, "layout");
+  return { ok: true, message };
 }
 
 export async function postStaffImageMessage(input: {
@@ -284,6 +293,12 @@ export async function postStaffImageMessage(input: {
     }
   }
 
+  if (input.visibility === "public" && !isWorkerConfigured()) {
+    throw new Error(
+      "WhatsApp worker no configurado (WHATSAPP_WORKER_URL / WHATSAPP_WORKER_SECRET).",
+    );
+  }
+
   const cap = input.caption?.trim();
   const bodyText = cap && cap.length > 0 ? cap : "📷 Imagen";
 
@@ -312,7 +327,7 @@ export async function postStaffImageMessage(input: {
   if (bumpErr) throw new Error(bumpErr.message);
 
   if (input.visibility === "public") {
-    await notifyWorkerSendImage({
+    void notifyWorkerSendImage({
       organizationId: input.orgId,
       messageId: row.id,
       waChatId: conv.wa_chat_id,
@@ -320,11 +335,10 @@ export async function postStaffImageMessage(input: {
       mimeType: input.mimeType,
       caption: cap && cap.length > 0 ? cap : null,
       quote: waQuote,
-    });
+    }).catch((e) => console.error("[diwhat] notifyWorkerSendImage", e));
   }
 
-  revalidatePath(`/dashboard/${input.orgId}/inbox/${input.conversationId}`);
-  revalidatePath(`/dashboard/${input.orgId}/inbox`);
+  revalidatePath(`/dashboard/${input.orgId}/inbox`, "layout");
 }
 
 export async function postStaffPdfMessage(input: {
@@ -391,6 +405,12 @@ export async function postStaffPdfMessage(input: {
     }
   }
 
+  if (input.visibility === "public" && !isWorkerConfigured()) {
+    throw new Error(
+      "WhatsApp worker no configurado (WHATSAPP_WORKER_URL / WHATSAPP_WORKER_SECRET).",
+    );
+  }
+
   const safeBase =
     input.fileName.trim().replace(/[/\\]/g, "_").slice(0, 200) || "document.pdf";
   const waFileName = safeBase.toLowerCase().endsWith(".pdf") ? safeBase : `${safeBase}.pdf`;
@@ -423,7 +443,7 @@ export async function postStaffPdfMessage(input: {
   if (bumpErr) throw new Error(bumpErr.message);
 
   if (input.visibility === "public") {
-    await notifyWorkerSendPdf({
+    void notifyWorkerSendPdf({
       organizationId: input.orgId,
       messageId: row.id,
       waChatId: conv.wa_chat_id,
@@ -431,11 +451,10 @@ export async function postStaffPdfMessage(input: {
       fileName: waFileName,
       caption: note && note.length > 0 ? note : null,
       quote: waQuote,
-    });
+    }).catch((e) => console.error("[diwhat] notifyWorkerSendPdf", e));
   }
 
-  revalidatePath(`/dashboard/${input.orgId}/inbox/${input.conversationId}`);
-  revalidatePath(`/dashboard/${input.orgId}/inbox`);
+  revalidatePath(`/dashboard/${input.orgId}/inbox`, "layout");
 }
 
 export async function postStaffVoiceMessage(input: {
@@ -490,6 +509,12 @@ export async function postStaffVoiceMessage(input: {
     }
   }
 
+  if (input.visibility === "public" && !isWorkerConfigured()) {
+    throw new Error(
+      "WhatsApp worker no configurado (WHATSAPP_WORKER_URL / WHATSAPP_WORKER_SECRET).",
+    );
+  }
+
   const { data: row, error: insErr } = await supabase
     .from("messages")
     .insert({
@@ -515,7 +540,7 @@ export async function postStaffVoiceMessage(input: {
   if (bumpErr) throw new Error(bumpErr.message);
 
   if (input.visibility === "public") {
-    await notifyWorkerSendVoice({
+    void notifyWorkerSendVoice({
       organizationId: input.orgId,
       messageId: row.id,
       waChatId: conv.wa_chat_id,
@@ -523,9 +548,8 @@ export async function postStaffVoiceMessage(input: {
       mimeType: input.mimeType,
       seconds: input.durationSeconds,
       quote: waQuote,
-    });
+    }).catch((e) => console.error("[diwhat] notifyWorkerSendVoice", e));
   }
 
-  revalidatePath(`/dashboard/${input.orgId}/inbox/${input.conversationId}`);
-  revalidatePath(`/dashboard/${input.orgId}/inbox`);
+  revalidatePath(`/dashboard/${input.orgId}/inbox`, "layout");
 }

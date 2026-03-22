@@ -1,13 +1,20 @@
 import { ConversationDisplayNameHeader } from "@/components/conversation-display-name-header";
 import { ConversationThread } from "@/components/conversation-thread";
 import { requireOrgMember } from "@/lib/auth/org";
+import { THREAD_MESSAGES_INITIAL } from "@/lib/thread-messages-query";
+import { unstable_noStore as noStore } from "next/cache";
+import { connection } from "next/server";
 import { notFound } from "next/navigation";
+
+export const dynamic = "force-dynamic";
 
 export default async function ConversationPage({
   params,
 }: {
   params: Promise<{ orgId: string; conversationId: string }>;
 }) {
+  await connection();
+  noStore();
   const { orgId, conversationId } = await params;
   const { supabase } = await requireOrgMember(orgId);
 
@@ -26,13 +33,16 @@ export default async function ConversationPage({
     .eq("id", conversationId)
     .eq("organization_id", orgId);
 
-  const { data: messages, error: msgErr } = await supabase
+  const { data: messagesDesc, error: msgErr } = await supabase
     .from("messages")
     .select(
       "id, body, direction, visibility, created_at, sender_user_id, content_type, media_path, reply_to_message_id",
     )
     .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: false })
+    .limit(THREAD_MESSAGES_INITIAL);
+
+  const messages = (messagesDesc ?? []).slice().reverse();
 
   if (msgErr) {
     return (

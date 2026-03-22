@@ -1,7 +1,11 @@
 "use client";
 
 import { postStaffImageMessage, postStaffMessage, postStaffPdfMessage } from "@/lib/actions/messages";
-import { replyPreviewText, type ReplySelection } from "@/components/thread-messages-live";
+import {
+  replyPreviewText,
+  type ReplySelection,
+  type ThreadMessageRow,
+} from "@/components/thread-messages-live";
 import { ThreadVoiceSend } from "@/components/thread-voice-send";
 import { createClient } from "@/lib/supabase/client";
 import { FileText, Image as ImageIcon, Loader2, Send, Users, X } from "lucide-react";
@@ -18,11 +22,15 @@ export function ThreadComposer({
   conversationId,
   replyTo,
   onClearReply,
+  onOutboundMessageInserted,
+  bumpThreadRefetch,
 }: {
   orgId: string;
   conversationId: string;
   replyTo: ReplySelection | null;
   onClearReply: () => void;
+  onOutboundMessageInserted?: (row: ThreadMessageRow) => void;
+  bumpThreadRefetch?: () => void;
 }) {
   const [body, setBody] = useState("");
   const [loading, setLoading] = useState<"public" | "internal" | null>(null);
@@ -81,6 +89,7 @@ export function ThreadComposer({
           caption: body.trim() || null,
           replyToMessageId: replyTo?.message.id ?? null,
         });
+        bumpThreadRefetch?.();
         setBody("");
         clearImage();
         onClearReply();
@@ -105,6 +114,7 @@ export function ThreadComposer({
           caption: body.trim() || null,
           replyToMessageId: replyTo?.message.id ?? null,
         });
+        bumpThreadRefetch?.();
         setBody("");
         clearPdf();
         onClearReply();
@@ -121,6 +131,7 @@ export function ThreadComposer({
         setError(textRes.error);
         return;
       }
+      onOutboundMessageInserted?.(textRes.message);
       setBody("");
       onClearReply();
     } catch (e) {
@@ -332,6 +343,7 @@ export function ThreadComposer({
       <ThreadVoiceSend
         actionSlot={actionSlot}
         beforeMicSlot={beforeMicSlot}
+        bumpThreadRefetch={bumpThreadRefetch}
         conversationId={conversationId}
         disabled={loading !== null}
         orgId={orgId}

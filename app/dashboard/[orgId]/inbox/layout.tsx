@@ -1,6 +1,8 @@
 import { InboxShell } from "@/components/inbox-shell";
 import { requireOrgMember } from "@/lib/auth/org";
+import { INBOX_CONVERSATIONS_INITIAL } from "@/lib/inbox-conversations-query";
 import { sortInboxConversations } from "@/lib/inbox-sort";
+import { unstable_noStore as noStore } from "next/cache";
 
 export default async function InboxLayout({
   children,
@@ -9,6 +11,7 @@ export default async function InboxLayout({
   children: React.ReactNode;
   params: Promise<{ orgId: string }>;
 }) {
+  noStore();
   const { orgId } = await params;
   const { supabase } = await requireOrgMember(orgId);
 
@@ -19,7 +22,8 @@ export default async function InboxLayout({
     )
     .eq("organization_id", orgId)
     .order("last_message_at", { ascending: false })
-    .order("id", { ascending: false });
+    .order("id", { ascending: false })
+    .limit(INBOX_CONVERSATIONS_INITIAL);
 
   if (error) {
     return (

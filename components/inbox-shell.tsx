@@ -34,6 +34,7 @@ export function InboxShell({ orgId, initialConversations, children }: Props) {
         }
       >
         <InboxConversationListLive
+          key={orgId}
           activeConversationId={conversationId ?? null}
           initialConversations={initialConversations}
           orgId={orgId}

@@ -1,11 +1,13 @@
 "use client";
 
+import { THREAD_MESSAGES_PAGE_SIZE } from "@/lib/thread-messages-query";
 import { formatDateTime } from "@/lib/format-date";
 import { publicMessageMediaUrl } from "@/lib/message-media-url";
 import { createClient } from "@/lib/supabase/client";
 import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
-import { FileText, Reply } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FileText, Loader2, Reply } from "lucide-react";
+import type { RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 export type ThreadMessageRow = {
   id: string;
@@ -29,7 +31,22 @@ type Props = {
   initialMessages: ThreadMessageRow[];
   initialNameById: Record<string, string>;
   onReply?: (selection: ReplySelection) => void;
+  /** Fila insertada en servidor (evita depender de RSC cache o Realtime). */
+  appendClientMessage?: { row: ThreadMessageRow; nonce: number } | null;
+  /** Incrementar tras enviar adjuntos/voz para forzar refetch cliente. */
+  externalRefetchNonce?: number;
+  /** Contenedor con scroll (lista del hilo) para restaurar posición al cargar mensajes viejos. */
+  scrollContainerRef: RefObject<HTMLDivElement | null>;
 };
+
+function mergeMessageLists(prev: ThreadMessageRow[], incoming: ThreadMessageRow[]): ThreadMessageRow[] {
+  const map = new Map<string, ThreadMessageRow>();
+  for (const m of prev) map.set(m.id, m);
+  for (const m of incoming) map.set(m.id, m);
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+  );
+}
 
 function replyAuthorLabel(
   parent: ThreadMessageRow,
@@ -55,13 +72,31 @@ export function ThreadMessagesLive({
   initialMessages,
   initialNameById,
   onReply,
+  appendClientMessage = null,
+  externalRefetchNonce = 0,
+  scrollContainerRef,
 }: Props) {
   const [messages, setMessages] = useState<ThreadMessageRow[]>(initialMessages);
+  const [hasMoreOlder, setHasMoreOlder] = useState(
+    () => initialMessages.length >= THREAD_MESSAGES_PAGE_SIZE,
+  );
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [nearTop, setNearTop] = useState(false);
   const [nameById, setNameById] = useState<Record<string, string>>(initialNameById);
+  const prevConversationIdRef = useRef<string | null>(null);
+  const skipScrollToEndRef = useRef(false);
+  const pendingScrollRestoreRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
 
-  useEffect(() => {
-    setMessages(initialMessages);
-  }, [initialMessages]);
+  /** useLayoutEffect: evita un frame en blanco si el primer render llegó sin props del servidor. */
+  useLayoutEffect(() => {
+    if (prevConversationIdRef.current !== conversationId) {
+      prevConversationIdRef.current = conversationId;
+      setMessages(initialMessages);
+      setHasMoreOlder(initialMessages.length >= THREAD_MESSAGES_PAGE_SIZE);
+      return;
+    }
+    setMessages((prev) => mergeMessageLists(prev, initialMessages));
+  }, [conversationId, initialMessages]);
 
   useEffect(() => {
     setNameById((prev) => ({ ...initialNameById, ...prev }));
@@ -77,6 +112,16 @@ export function ThreadMessagesLive({
     prevMessageCountRef.current = null;
   }, [conversationId]);
 
+  useLayoutEffect(() => {
+    const el = scrollContainerRef.current;
+    const pending = pendingScrollRestoreRef.current;
+    if (el && pending) {
+      const delta = el.scrollHeight - pending.scrollHeight;
+      el.scrollTop = pending.scrollTop + delta;
+      pendingScrollRestoreRef.current = null;
+    }
+  }, [messages, scrollContainerRef]);
+
   useEffect(() => {
     const n = messages.length;
     const prev = prevMessageCountRef.current;
@@ -85,11 +130,28 @@ export function ThreadMessagesLive({
       scrollEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
       return;
     }
+    if (skipScrollToEndRef.current) {
+      skipScrollToEndRef.current = false;
+      prevMessageCountRef.current = n;
+      return;
+    }
     if (n > prev) {
       scrollEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }
     prevMessageCountRef.current = n;
   }, [messages]);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const threshold = 180;
+    const onScroll = () => {
+      setNearTop(el.scrollTop < threshold);
+    };
+    onScroll();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [scrollContainerRef, conversationId]);
 
   const scrollToQuotedMessage = useCallback((quotedId: string) => {
     const el = document.getElementById(`thread-msg-${quotedId}`);
@@ -125,19 +187,116 @@ export function ThreadMessagesLive({
     });
   }, [supabase]);
 
-  /** Recarga desde DB (respaldo si Realtime no está activo o llega antes la sesión). */
+  /** Recarga desde DB (respaldo si Realtime no está activo o llega antes la sesión). Solo los N más recientes; el merge conserva bloques antiguos ya cargados con "Cargar más". */
   const refetchThread = useCallback(async () => {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    // Sin JWT, RLS devuelve [] sin error y vaciaría el hilo aunque el SSR sí cargó mensajes.
+    if (!session) return;
+
     const { data, error } = await supabase
       .from("messages")
       .select(
         "id, body, direction, visibility, created_at, sender_user_id, content_type, media_path, reply_to_message_id",
       )
       .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true });
+      .order("created_at", { ascending: false })
+      .limit(THREAD_MESSAGES_PAGE_SIZE);
     if (error || !data) return;
-    setMessages(data as ThreadMessageRow[]);
-    void mergeSenderNames(data as ThreadMessageRow[]);
+    const rows = (data as ThreadMessageRow[]).slice().reverse();
+    if (rows.length === 0) {
+      setMessages((prev) => (prev.length > 0 ? prev : []));
+      return;
+    }
+    setMessages((prev) => mergeMessageLists(prev, rows));
+    void mergeSenderNames(rows);
   }, [supabase, conversationId, mergeSenderNames]);
+
+  const loadOlderMessages = useCallback(async () => {
+    const oldest = messages[0];
+    if (!oldest || loadingOlder || !hasMoreOlder) return;
+    const el = scrollContainerRef.current;
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return;
+
+    setLoadingOlder(true);
+    if (el) {
+      pendingScrollRestoreRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+    }
+    skipScrollToEndRef.current = true;
+
+    const iso = oldest.created_at;
+    const filter = `created_at.lt.${iso},and(created_at.eq.${iso},id.lt.${oldest.id})`;
+
+    const { data, error } = await supabase
+      .from("messages")
+      .select(
+        "id, body, direction, visibility, created_at, sender_user_id, content_type, media_path, reply_to_message_id",
+      )
+      .eq("conversation_id", conversationId)
+      .or(filter)
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(THREAD_MESSAGES_PAGE_SIZE);
+
+    setLoadingOlder(false);
+
+    if (error) {
+      console.error("[ThreadMessagesLive] loadOlderMessages", error);
+      pendingScrollRestoreRef.current = null;
+      skipScrollToEndRef.current = false;
+      return;
+    }
+
+    if (!data?.length) {
+      setHasMoreOlder(false);
+      pendingScrollRestoreRef.current = null;
+      skipScrollToEndRef.current = false;
+      return;
+    }
+
+    const rows = (data as ThreadMessageRow[]).slice().reverse();
+    if (rows.length < THREAD_MESSAGES_PAGE_SIZE) setHasMoreOlder(false);
+    setMessages((prev) => mergeMessageLists(prev, rows));
+    void mergeSenderNames(rows);
+  }, [
+    conversationId,
+    hasMoreOlder,
+    loadingOlder,
+    mergeSenderNames,
+    messages,
+    scrollContainerRef,
+    supabase,
+  ]);
+
+  /** Evita que el efecto de Realtime se reinicie cuando cambia la identidad de refetchThread (pierde INSERT entrantes). */
+  const refetchThreadRef = useRef(refetchThread);
+  refetchThreadRef.current = refetchThread;
+
+  /** Tras F5, el HTML del servidor a veces va justo antes que la réplica o la cookie; repetimos refetch en cliente. */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const t1 = window.setTimeout(() => void refetchThreadRef.current(), 400);
+    return () => {
+      clearTimeout(t1);
+    };
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (!appendClientMessage) return;
+    const { row } = appendClientMessage;
+    setMessages((prev) => mergeMessageLists(prev, [row]));
+    void mergeSenderNames([row]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- append solo cuando cambia nonce
+  }, [appendClientMessage?.nonce]);
+
+  useEffect(() => {
+    if (externalRefetchNonce <= 0) return;
+    void refetchThreadRef.current();
+  }, [externalRefetchNonce]);
 
   const messageById = useMemo(
     () => Object.fromEntries(messages.map((m) => [m.id, m])),
@@ -197,6 +356,29 @@ export function ThreadMessagesLive({
             }
           },
         )
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "messages",
+            filter: `conversation_id=eq.${conversationId}`,
+          },
+          (payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
+            const raw = payload.new as Record<string, unknown> | null;
+            if (!raw || typeof raw.id !== "string") return;
+            const row = raw as unknown as ThreadMessageRow;
+            setMessages((prev) => {
+              const i = prev.findIndex((m) => m.id === row.id);
+              if (i === -1) return prev;
+              const copy = [...prev];
+              copy[i] = row;
+              return copy.sort(
+                (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+              );
+            });
+          },
+        )
         .subscribe((status) => {
           if (process.env.NODE_ENV === "development" && status === "SUBSCRIBED") {
             console.debug("[ThreadMessagesLive] Realtime suscrito", conversationId);
@@ -208,25 +390,30 @@ export function ThreadMessagesLive({
         return;
       }
       channel = next;
+      void refetchThreadRef.current();
     };
-
-    void attachRealtime();
 
     const pollMs = 3500;
     const tick = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      void refetchThread();
+      void refetchThreadRef.current();
     };
     const interval = setInterval(tick, pollMs);
-    void refetchThread();
+    void refetchThreadRef.current();
 
-    const { data: authSub } = supabase.auth.onAuthStateChange((_event, session) => {
+    /** No llamar attachRealtime en cada TOKEN_REFRESHED: recrea el canal, cierra el WS y dispara el warning en consola. */
+    const { data: authSub } = supabase.auth.onAuthStateChange((event, session) => {
       if (!session) {
         if (channel) void supabase.removeChannel(channel);
         channel = null;
         return;
       }
+      if (event === "TOKEN_REFRESHED") {
+        void refetchThreadRef.current();
+        return;
+      }
       void attachRealtime();
+      void refetchThreadRef.current();
     });
 
     return () => {
@@ -236,10 +423,33 @@ export function ThreadMessagesLive({
       authSub.subscription.unsubscribe();
       if (channel) void supabase.removeChannel(channel);
     };
-  }, [supabase, conversationId, refetchThread]);
+  }, [supabase, conversationId]);
+
+  const showLoadMoreBar = (nearTop && hasMoreOlder) || loadingOlder;
 
   return (
     <ul className="flex flex-col gap-2">
+      {showLoadMoreBar ? (
+        <li className="list-none py-1">
+          <div className="flex justify-center">
+            <button
+              className="inline-flex items-center gap-2 rounded-full border border-brand-border bg-white px-4 py-2 text-sm font-medium text-brand-primary shadow-sm transition hover:bg-brand-hover disabled:opacity-60"
+              disabled={loadingOlder || !hasMoreOlder}
+              type="button"
+              onClick={() => void loadOlderMessages()}
+            >
+              {loadingOlder ? (
+                <>
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+                  Cargando…
+                </>
+              ) : (
+                "Cargar mensajes anteriores"
+              )}
+            </button>
+          </div>
+        </li>
+      ) : null}
       {messages.map((m) => {
         const isInternal = m.visibility === "internal";
         const isInbound = m.direction === "inbound";

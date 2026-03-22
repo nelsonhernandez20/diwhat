@@ -2,11 +2,12 @@
 
 import { conversationDisplayTitle } from "@/lib/conversation-title";
 import { formatDateTime } from "@/lib/format-date";
+import { INBOX_CONVERSATIONS_PAGE_SIZE } from "@/lib/inbox-conversations-query";
 import { sortInboxConversations } from "@/lib/inbox-sort";
 import { WaAvatar } from "@/components/wa-avatar";
 import { createClient } from "@/lib/supabase/client";
 import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
-import { RefreshCw, Search } from "lucide-react";
+import { Loader2, RefreshCw, Search } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -50,6 +51,17 @@ function hasUnreadInbound(c: InboxConversationRow): boolean {
   return new Date(c.last_inbound_at).getTime() > new Date(c.last_read_at).getTime();
 }
 
+function mergeInboxRows(
+  prev: InboxConversationRow[],
+  incoming: InboxConversationRow[],
+): InboxConversationRow[] {
+  const map = new Map(prev.map((r) => [r.id, r]));
+  for (const r of incoming) {
+    map.set(r.id, r);
+  }
+  return sortInboxConversations(Array.from(map.values()));
+}
+
 export function InboxConversationListLive({
   orgId,
   initialConversations,
@@ -58,6 +70,11 @@ export function InboxConversationListLive({
   const [rows, setRows] = useState<InboxConversationRow[]>(() =>
     sortInboxConversations(initialConversations),
   );
+  const [nextSqlOffset, setNextSqlOffset] = useState(() => initialConversations.length);
+  const [hasMoreConversations, setHasMoreConversations] = useState(
+    () => initialConversations.length >= INBOX_CONVERSATIONS_PAGE_SIZE,
+  );
+  const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
   const [previews, setPreviews] = useState<Record<string, string>>({});
   const [search, setSearch] = useState("");
   const [syncBusy, setSyncBusy] = useState(false);
@@ -111,7 +128,8 @@ export function InboxConversationListLive({
       const ids = list.map((r) => r.id);
       if (!ids.length) return;
 
-      const chunkSize = 200;
+      /** Chunks pequeños + RPC con LATERAL en BD: evita statement_timeout con mucho historial. */
+      const chunkSize = 40;
       const merged: Record<string, string> = {};
 
       for (let offset = 0; offset < ids.length; offset += chunkSize) {
@@ -147,12 +165,58 @@ export function InboxConversationListLive({
       )
       .eq("organization_id", orgId)
       .order("last_message_at", { ascending: false })
-      .order("id", { ascending: false });
+      .order("id", { ascending: false })
+      .range(0, INBOX_CONVERSATIONS_PAGE_SIZE - 1);
     if (error || !convs) return;
-    const sorted = sortDesc(convs);
-    setRows(sorted);
-    await refetchPreviewsForRows(sorted);
-  }, [supabase, orgId, sortDesc, refetchPreviewsForRows]);
+    setRows((prev) => mergeInboxRows(prev, convs));
+    await refetchPreviewsForRows(convs);
+  }, [supabase, orgId, refetchPreviewsForRows]);
+
+  const loadMoreConversations = useCallback(async () => {
+    if (loadingMoreConversations || !hasMoreConversations) return;
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return;
+
+    setLoadingMoreConversations(true);
+    const { data, error } = await supabase
+      .from("conversations")
+      .select(
+        "id, customer_label, customer_display_name, wa_chat_id, last_message_at, wa_avatar_path, last_inbound_at, last_read_at",
+      )
+      .eq("organization_id", orgId)
+      .order("last_message_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(nextSqlOffset, nextSqlOffset + INBOX_CONVERSATIONS_PAGE_SIZE - 1);
+
+    setLoadingMoreConversations(false);
+
+    if (error) {
+      if (process.env.NODE_ENV === "development") {
+        console.warn("[inbox] loadMoreConversations", error.message);
+      }
+      return;
+    }
+
+    const chunk = data ?? [];
+    if (chunk.length < INBOX_CONVERSATIONS_PAGE_SIZE) setHasMoreConversations(false);
+    if (chunk.length === 0) {
+      setHasMoreConversations(false);
+      return;
+    }
+
+    setRows((prev) => mergeInboxRows(prev, chunk));
+    setNextSqlOffset((s) => s + chunk.length);
+    await refetchPreviewsForRows(chunk);
+  }, [
+    hasMoreConversations,
+    loadingMoreConversations,
+    nextSqlOffset,
+    orgId,
+    refetchPreviewsForRows,
+    supabase,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -291,8 +355,6 @@ export function InboxConversationListLive({
       channel = next;
     };
 
-    void attachRealtime();
-
     const pollMs = 3500;
     const tick = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
@@ -301,10 +363,14 @@ export function InboxConversationListLive({
     const interval = setInterval(tick, pollMs);
     void refetchInbox();
 
-    const { data: authSub } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: authSub } = supabase.auth.onAuthStateChange((event, session) => {
       if (!session) {
         if (channel) void supabase.removeChannel(channel);
         channel = null;
+        return;
+      }
+      if (event === "TOKEN_REFRESHED") {
+        void refetchInbox();
         return;
       }
       void attachRealtime();
@@ -438,8 +504,29 @@ export function InboxConversationListLive({
           </p>
         </div>
       ) : !filtered.length ? (
-        <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-brand-muted">
-          No hay contactos que coincidan con «{search.trim()}».
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-brand-muted">
+            No hay contactos que coincidan con «{search.trim()}».
+          </div>
+          {hasMoreConversations ? (
+            <div className="shrink-0 border-t border-black/6 p-3 md:px-4">
+              <button
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-brand-border bg-white py-2.5 text-sm font-medium text-brand-primary shadow-sm transition hover:bg-brand-hover disabled:opacity-60"
+                disabled={loadingMoreConversations}
+                type="button"
+                onClick={() => void loadMoreConversations()}
+              >
+                {loadingMoreConversations ? (
+                  <>
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+                    Cargando…
+                  </>
+                ) : (
+                  "Cargar más conversaciones"
+                )}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : (
         <ul className="min-h-0 flex-1 divide-y divide-black/6 overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]">
@@ -457,7 +544,7 @@ export function InboxConversationListLive({
                     active ? "bg-brand-hover" : "hover:bg-brand-hover/70"
                   }`}
                   href={href}
-                  prefetch={false}
+                  prefetch
                   scroll={false}
                 >
                   <WaAvatar label={title} size="md" waAvatarPath={c.wa_avatar_path} />
@@ -491,6 +578,27 @@ export function InboxConversationListLive({
               </li>
             );
           })}
+          {hasMoreConversations ? (
+            <li className="list-none">
+              <div className="px-3 py-3 md:px-4">
+                <button
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-brand-border bg-white py-2.5 text-sm font-medium text-brand-primary shadow-sm transition hover:bg-brand-hover disabled:opacity-60"
+                  disabled={loadingMoreConversations}
+                  type="button"
+                  onClick={() => void loadMoreConversations()}
+                >
+                  {loadingMoreConversations ? (
+                    <>
+                      <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+                      Cargando…
+                    </>
+                  ) : (
+                    "Cargar más conversaciones"
+                  )}
+                </button>
+              </div>
+            </li>
+          ) : null}
         </ul>
       )}
     </div>

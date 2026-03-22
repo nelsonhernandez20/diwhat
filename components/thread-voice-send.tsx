@@ -23,6 +23,7 @@ export function ThreadVoiceSend({
   actionSlot,
   replyToMessageId = null,
   onVoiceSent,
+  bumpThreadRefetch,
 }: {
   orgId: string;
   conversationId: string;
@@ -33,6 +34,7 @@ export function ThreadVoiceSend({
   replyToMessageId?: string | null;
   /** Tras enviar nota de voz correctamente (p. ej. limpiar cita). */
   onVoiceSent?: () => void;
+  bumpThreadRefetch?: () => void;
 }) {
   const [phase, setPhase] = useState<"idle" | "recording" | "ready">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -195,6 +197,7 @@ export function ThreadVoiceSend({
         durationSeconds: elapsed > 0 ? elapsed : undefined,
         replyToMessageId: replyToMessageId ?? undefined,
       });
+      bumpThreadRefetch?.();
       discard();
       onVoiceSent?.();
     } catch (e) {
