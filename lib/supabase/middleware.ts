@@ -29,7 +29,8 @@ export async function updateSession(request: NextRequest) {
     },
   );
 
-  await supabase.auth.getUser();
+  /** getSession refresca cookies sin GET /user en cada request (evita timeouts del edge con muchas peticiones). */
+  await supabase.auth.getSession();
 
   return supabaseResponse;
 }

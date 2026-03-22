@@ -105,40 +105,42 @@ export function InboxConversationListLive({
     [supabase],
   );
 
-  /** Último mensaje por conversación (para refrescar la bandeja sin N consultas si hay pocas filas). */
+  /** Carga masiva vía RPC: un último mensaje por conversación (evita cientos de SELECT). */
   const refetchPreviewsForRows = useCallback(
     async (list: InboxConversationRow[]) => {
       const ids = list.map((r) => r.id);
       if (!ids.length) return;
-      const { data: msgs, error } = await supabase
-        .from("messages")
-        .select("conversation_id, body, created_at")
-        .in("conversation_id", ids)
-        .order("created_at", { ascending: false })
-        .limit(Math.min(500, Math.max(80, ids.length * 15)));
-      if (error || !msgs?.length) {
-        for (const id of ids.slice(0, 40)) void fetchPreview(id);
-        return;
+
+      const chunkSize = 200;
+      const merged: Record<string, string> = {};
+
+      for (let offset = 0; offset < ids.length; offset += chunkSize) {
+        const slice = ids.slice(offset, offset + chunkSize);
+        const { data, error } = await supabase.rpc("inbox_last_message_previews", {
+          p_org_id: orgId,
+          p_conversation_ids: slice,
+        });
+        if (error) {
+          if (process.env.NODE_ENV === "development") {
+            console.warn("[inbox] inbox_last_message_previews", error.message);
+          }
+          continue;
+        }
+        for (const row of data ?? []) {
+          const r = row as { conversation_id: string; body: string | null };
+          if (typeof r.body === "string" && r.body.length > 0) {
+            merged[r.conversation_id] = r.body;
+          }
+        }
       }
-      const seen = new Set<string>();
-      const next: Record<string, string> = {};
-      for (const m of msgs) {
-        const cid = m.conversation_id as string;
-        if (seen.has(cid)) continue;
-        seen.add(cid);
-        if (typeof m.body === "string") next[cid] = m.body;
-        if (seen.size >= ids.length) break;
-      }
-      setPreviews((prev) => ({ ...prev, ...next }));
-      for (const id of ids) {
-        if (!next[id]) void fetchPreview(id);
-      }
+
+      setPreviews((prev) => ({ ...prev, ...merged }));
     },
-    [supabase, fetchPreview],
+    [supabase, orgId],
   );
 
   const refetchInbox = useCallback(async () => {
-      const { data: convs, error } = await supabase
+    const { data: convs, error } = await supabase
       .from("conversations")
       .select(
         "id, customer_label, customer_display_name, wa_chat_id, last_message_at, wa_avatar_path, last_inbound_at, last_read_at",
@@ -455,6 +457,7 @@ export function InboxConversationListLive({
                     active ? "bg-brand-hover" : "hover:bg-brand-hover/70"
                   }`}
                   href={href}
+                  prefetch={false}
                   scroll={false}
                 >
                   <WaAvatar label={title} size="md" waAvatarPath={c.wa_avatar_path} />
